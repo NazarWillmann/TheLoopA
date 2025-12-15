@@ -1,0 +1,21 @@
+cti:
+  ws_url: ws://10.224.111.206:8089/ws/ts
+  auth:
+    keycloak_url: https://keycloak.example.com
+    client_id: cti_backend
+    client_secret: your_client_secret
+    username: your_username
+    password: your_password
+
+asterisk:
+  ari_url: http://localhost:8088/ari
+  username: ari
+  password: ari
+  outbound_endpoint: bank-out
+
+service:
+  log_level: info
+
+http:
+  enabled: true
+  port: 8080
