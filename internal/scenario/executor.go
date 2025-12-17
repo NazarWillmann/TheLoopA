@@ -13,9 +13,29 @@ import (
 	"TheLoopA/internal/config"
 	"TheLoopA/internal/cti"
 	"TheLoopA/internal/domain"
+	"TheLoopA/internal/sip"
 	"TheLoopA/internal/ws"
 	"github.com/rs/zerolog"
 )
+
+// SIPServerAdapter adapts the SIP server to match the CTI interface
+type SIPServerAdapter struct {
+	server *sip.SIPServer
+}
+
+func (a *SIPServerAdapter) EmulateIncomingCall(req cti.SIPCallRequest) error {
+	sipReq := sip.CallRequest{
+		Destination: req.Destination,
+		CallerID:    req.CallerID,
+		UUI:         req.UUI,
+		CallID:      req.CallID,
+	}
+	return a.server.EmulateIncomingCall(sipReq)
+}
+
+func (a *SIPServerAdapter) IsRunning() bool {
+	return a.server.IsRunning()
+}
 
 type Executor struct {
 	config         *config.Config
@@ -24,6 +44,7 @@ type Executor struct {
 	wsClient       *ws.Client
 	ariClient      *asterisk.ARIClient
 	ariEventClient *asterisk.ARIEventClient
+	sipServer      *sip.SIPServer
 	stateManager   *domain.StateManager
 	ctiHandlers    *cti.Handlers
 	httpServer     *http.Server
@@ -75,6 +96,11 @@ func (e *Executor) Start() error {
 		return fmt.Errorf("failed to initialize Asterisk clients: %w", err)
 	}
 
+	// Initialize SIP server
+	if err := e.initSIPServer(); err != nil {
+		return fmt.Errorf("failed to initialize SIP server: %w", err)
+	}
+
 	// Initialize CTI handlers
 	if err := e.initCTIHandlers(); err != nil {
 		return fmt.Errorf("failed to initialize CTI handlers: %w", err)
@@ -121,6 +147,15 @@ func (e *Executor) Stop() error {
 	if e.ariEventClient != nil {
 		if err := e.ariEventClient.Disconnect(); err != nil {
 			e.logger.Error().Err(err).Msg("Failed to disconnect from ARI WebSocket")
+		}
+	}
+
+	// Stop SIP server
+	if e.sipServer != nil {
+		if err := e.sipServer.Stop(); err != nil {
+			e.logger.Error().Err(err).Msg("Failed to stop SIP server")
+		} else {
+			e.logger.Info().Msg("SIP server stopped")
 		}
 	}
 
@@ -199,6 +234,34 @@ func (e *Executor) initAsteriskClients() error {
 	return nil
 }
 
+func (e *Executor) initSIPServer() error {
+	if !e.config.SIP.Enabled {
+		e.logger.Info().Msg("SIP server is disabled")
+		return nil
+	}
+
+	// Initialize SIP server
+	sipConfig := sip.SIPServerConfig{
+		ListenAddr:   e.config.SIP.ListenAddr,
+		AsteriskAddr: e.config.SIP.AsteriskAddr,
+		Logger:       e.logger.With().Str("component", "sip_server").Logger(),
+	}
+
+	e.sipServer = sip.NewSIPServer(sipConfig)
+
+	// Start SIP server
+	if err := e.sipServer.Start(); err != nil {
+		return fmt.Errorf("failed to start SIP server: %w", err)
+	}
+
+	e.logger.Debug().
+		Str("listen_addr", e.config.SIP.ListenAddr).
+		Str("asterisk_addr", e.config.SIP.AsteriskAddr).
+		Msg("SIP server initialized and started")
+
+	return nil
+}
+
 func (e *Executor) initCTIHandlers() error {
 	// Create event handler for ARI events
 	eventHandler := asterisk.NewDefaultEventHandler(
@@ -218,10 +281,12 @@ func (e *Executor) initCTIHandlers() error {
 	)
 
 	// Initialize CTI handlers
+	sipAdapter := &SIPServerAdapter{server: e.sipServer}
 	handlerContext := &cti.HandlerContext{
 		StateManager:   e.stateManager,
 		WSClient:       e.wsClient,
 		AsteriskClient: e.ariClient,
+		SIPServer:      sipAdapter,
 		Logger:         e.logger.With().Str("component", "cti_handlers").Logger(),
 	}
 
@@ -411,4 +476,123 @@ func (e *Executor) RunBasicScenario(destinationNumber string) error {
 
 	e.logger.Info().Msg("Basic scenario completed successfully")
 	return nil
+}
+
+// RunOutboundCallScenario executes an outbound call scenario from agent to client
+func (e *Executor) RunOutboundCallScenario(agentID, destinationNumber, callerID, uui string) error {
+	e.logger.Info().
+		Str("agent_id", agentID).
+		Str("destination", destinationNumber).
+		Str("caller_id", callerID).
+		Str("uui", uui).
+		Msg("Running outbound call scenario")
+
+	// Wait for connections to be established
+	time.Sleep(1 * time.Second)
+
+	// If no agentID provided, use the current agent or create one
+	if agentID == "" {
+		// Ensure we have an agent registered and ready
+		if err := e.ensureAgentReady(); err != nil {
+			return fmt.Errorf("failed to ensure agent is ready: %w", err)
+		}
+		agentID = e.getCurrentAgentID()
+	}
+
+	// Send outbound call message
+	outboundCallMsg := ws.Message{
+		Name: "lineMakeOutboundCall",
+		Body: cti.LineMakeOutboundCallMessage{
+			BaseMessage:       cti.BaseMessage{RefID: fmt.Sprintf("outbound-call-%d", time.Now().Unix())},
+			DestinationNumber: destinationNumber,
+			CallerID:          callerID,
+			UUI:               uui,
+			AgentID:           agentID,
+		},
+	}
+
+	if err := e.wsClient.SendMessage(outboundCallMsg); err != nil {
+		return fmt.Errorf("failed to send outbound call message: %w", err)
+	}
+
+	e.logger.Info().
+		Str("agent_id", agentID).
+		Str("destination", destinationNumber).
+		Msg("Outbound call scenario completed successfully")
+
+	return nil
+}
+
+// ensureAgentReady ensures there's a ready agent for outbound calls
+func (e *Executor) ensureAgentReady() error {
+	// Check if we already have a ready agent
+	status := e.stateManager.GetSystemStatus()
+	if agentStats, ok := status["agents"].(map[string]interface{}); ok {
+		if states, ok := agentStats["states"].(map[string]int); ok {
+			if readyCount, ok := states["READY"]; ok && readyCount > 0 {
+				return nil // We have a ready agent
+			}
+		}
+	}
+
+	// No ready agent, create and prepare one
+	e.logger.Info().Msg("No ready agent found, creating and preparing one")
+
+	// Step 1: Agent Register
+	registerMsg := ws.Message{
+		Name: "agentRegister",
+		Body: cti.AgentRegisterMessage{
+			BaseMessage: cti.BaseMessage{RefID: "outbound-register-001"},
+		},
+	}
+
+	if err := e.wsClient.SendMessage(registerMsg); err != nil {
+		return fmt.Errorf("failed to send agent register: %w", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Step 2: Agent Login
+	loginMsg := ws.Message{
+		Name: "agentLogin",
+		Body: cti.AgentLoginMessage{
+			BaseMessage: cti.BaseMessage{RefID: "outbound-login-001"},
+		},
+	}
+
+	if err := e.wsClient.SendMessage(loginMsg); err != nil {
+		return fmt.Errorf("failed to send agent login: %w", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Step 3: Agent Change State to READY
+	changeStateMsg := ws.Message{
+		Name: "agentChangeState",
+		Body: cti.AgentChangeStateMessage{
+			BaseMessage: cti.BaseMessage{RefID: "outbound-ready-001"},
+			State:       cti.AgentStateCodeReady,
+		},
+	}
+
+	if err := e.wsClient.SendMessage(changeStateMsg); err != nil {
+		return fmt.Errorf("failed to send agent change state: %w", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	return nil
+}
+
+// getCurrentAgentID gets the current agent ID from the CTI handlers
+func (e *Executor) getCurrentAgentID() string {
+	// Get the first available agent from state manager
+	agents := e.stateManager.AgentManager.GetAllAgents()
+	if len(agents) > 0 {
+		// Return the first agent's ID
+		for _, agent := range agents {
+			return agent.ID
+		}
+	}
+	return ""
 }

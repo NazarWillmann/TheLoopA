@@ -12,6 +12,7 @@ import (
 // CallExecutor interface defines the methods needed by API handlers
 type CallExecutor interface {
 	RunBasicScenario(destinationNumber string) error
+	RunOutboundCallScenario(agentID, destinationNumber, callerID, uui string) error
 	GetSystemStatus() map[string]interface{}
 }
 
@@ -24,6 +25,13 @@ type MakeCallRequest struct {
 	Destination string `json:"destination"`
 	CallerID    string `json:"caller_id,omitempty"`
 	UUI         string `json:"uui,omitempty"`
+}
+
+type MakeOutboundCallRequest struct {
+	Destination string `json:"destination"`
+	CallerID    string `json:"caller_id,omitempty"`
+	UUI         string `json:"uui,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
 }
 
 type MakeCallResponse struct {
@@ -63,9 +71,9 @@ type CallStatusResponse struct {
 }
 
 type StatusResponse struct {
-	Success bool                    `json:"success"`
-	Status  map[string]interface{}  `json:"status"`
-	Version string                  `json:"version"`
+	Success bool                   `json:"success"`
+	Status  map[string]interface{} `json:"status"`
+	Version string                 `json:"version"`
 }
 
 type ErrorResponse struct {
@@ -85,6 +93,7 @@ func (h *APIHandlers) SetupRoutes() *http.ServeMux {
 
 	// API endpoints
 	mux.HandleFunc("/api/v1/call/make", h.handleMakeCall)
+	mux.HandleFunc("/api/v1/call/make-outbound", h.handleMakeOutboundCall)
 	mux.HandleFunc("/api/v1/call/answer", h.handleAnswerCall)
 	mux.HandleFunc("/api/v1/call/hangup", h.handleHangupCall)
 	mux.HandleFunc("/api/v1/call/transfer", h.handleTransferCall)
@@ -160,9 +169,50 @@ func (h *APIHandlers) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
-		"success": true,
-		"status":  "healthy",
+		"success":   true,
+		"status":    "healthy",
 		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	h.sendJSON(w, response, http.StatusOK)
+}
+
+func (h *APIHandlers) handleMakeOutboundCall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req MakeOutboundCallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.logger.Error().Err(err).Msg("Failed to decode make outbound call request")
+		h.sendError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Destination == "" {
+		h.sendError(w, "Destination is required", http.StatusBadRequest)
+		return
+	}
+
+	h.logger.Info().
+		Str("destination", req.Destination).
+		Str("caller_id", req.CallerID).
+		Str("agent_id", req.AgentID).
+		Str("uui", req.UUI).
+		Msg("API outbound call request received")
+
+	// Execute the outbound call scenario
+	if err := h.executor.RunOutboundCallScenario(req.AgentID, req.Destination, req.CallerID, req.UUI); err != nil {
+		h.logger.Error().Err(err).Msg("Failed to execute outbound call scenario")
+		h.sendError(w, fmt.Sprintf("Failed to make outbound call: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := MakeCallResponse{
+		Success: true,
+		Message: "Outbound call initiated successfully (agent-to-client call)",
+		RefID:   fmt.Sprintf("api-outbound-call-%d", time.Now().Unix()),
 	}
 
 	h.sendJSON(w, response, http.StatusOK)

@@ -7,12 +7,13 @@ import (
 type Config struct {
 	CTI      CTIConfig      `mapstructure:"cti"`
 	Asterisk AsteriskConfig `mapstructure:"asterisk"`
+	SIP      SIPConfig      `mapstructure:"sip"`
 	Service  ServiceConfig  `mapstructure:"service"`
 	HTTP     HTTPConfig     `mapstructure:"http"`
 }
 
 type CTIConfig struct {
-	WSURL string    `mapstructure:"ws_url"`
+	WSURL string     `mapstructure:"ws_url"`
 	Auth  AuthConfig `mapstructure:"auth"`
 }
 
@@ -29,6 +30,12 @@ type AsteriskConfig struct {
 	Username         string `mapstructure:"username"`
 	Password         string `mapstructure:"password"`
 	OutboundEndpoint string `mapstructure:"outbound_endpoint"`
+}
+
+type SIPConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	ListenAddr   string `mapstructure:"listen_addr"`
+	AsteriskAddr string `mapstructure:"asterisk_addr"`
 }
 
 type ServiceConfig struct {
@@ -50,6 +57,9 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("asterisk.username", "ari")
 	viper.SetDefault("asterisk.password", "ari")
 	viper.SetDefault("asterisk.outbound_endpoint", "bank-out")
+	viper.SetDefault("sip.enabled", true)
+	viper.SetDefault("sip.listen_addr", "127.0.0.1:5061")
+	viper.SetDefault("sip.asterisk_addr", "127.0.0.1:5060")
 	viper.SetDefault("service.log_level", "info")
 	viper.SetDefault("http.port", 8080)
 	viper.SetDefault("http.enabled", true)

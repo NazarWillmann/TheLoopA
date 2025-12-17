@@ -22,30 +22,30 @@ type ARIClient struct {
 }
 
 type OriginateRequest struct {
-	Endpoint  string            `json:"endpoint"`
-	Extension string            `json:"extension,omitempty"`
-	Context   string            `json:"context,omitempty"`
-	Priority  int               `json:"priority,omitempty"`
-	App       string            `json:"app,omitempty"`
-	AppArgs   []string          `json:"appArgs,omitempty"`
-	CallerID  string            `json:"callerId,omitempty"`
-	Timeout   int               `json:"timeout,omitempty"`
-	Variables map[string]string `json:"variables,omitempty"`
-	ChannelID string            `json:"channelId,omitempty"`
-	OtherChannelID string       `json:"otherChannelId,omitempty"`
+	Endpoint       string            `json:"endpoint"`
+	Extension      string            `json:"extension,omitempty"`
+	Context        string            `json:"context,omitempty"`
+	Priority       int               `json:"priority,omitempty"`
+	App            string            `json:"app,omitempty"`
+	AppArgs        []string          `json:"appArgs,omitempty"`
+	CallerID       string            `json:"callerId,omitempty"`
+	Timeout        int               `json:"timeout,omitempty"`
+	Variables      map[string]string `json:"variables,omitempty"`
+	ChannelID      string            `json:"channelId,omitempty"`
+	OtherChannelID string            `json:"otherChannelId,omitempty"`
 }
 
 type OriginateResponse struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	State       string            `json:"state"`
-	CallerID    CallerID          `json:"caller"`
-	Connected   CallerID          `json:"connected"`
-	AccountCode string            `json:"accountcode"`
-	Dialplan    DialplanCEP       `json:"dialplan"`
-	CreationTime string           `json:"creationtime"`
-	Language    string            `json:"language"`
-	Variables   map[string]string `json:"channelvars,omitempty"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	State        string            `json:"state"`
+	CallerID     CallerID          `json:"caller"`
+	Connected    CallerID          `json:"connected"`
+	AccountCode  string            `json:"accountcode"`
+	Dialplan     DialplanCEP       `json:"dialplan"`
+	CreationTime string            `json:"creationtime"`
+	Language     string            `json:"language"`
+	Variables    map[string]string `json:"channelvars,omitempty"`
 }
 
 type CallerID struct {
@@ -60,16 +60,16 @@ type DialplanCEP struct {
 }
 
 type Channel struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	State       string            `json:"state"`
-	CallerID    CallerID          `json:"caller"`
-	Connected   CallerID          `json:"connected"`
-	AccountCode string            `json:"accountcode"`
-	Dialplan    DialplanCEP       `json:"dialplan"`
-	CreationTime string           `json:"creationtime"`
-	Language    string            `json:"language"`
-	Variables   map[string]string `json:"channelvars,omitempty"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	State        string            `json:"state"`
+	CallerID     CallerID          `json:"caller"`
+	Connected    CallerID          `json:"connected"`
+	AccountCode  string            `json:"accountcode"`
+	Dialplan     DialplanCEP       `json:"dialplan"`
+	CreationTime string            `json:"creationtime"`
+	Language     string            `json:"language"`
+	Variables    map[string]string `json:"channelvars,omitempty"`
 }
 
 type ARIError struct {
@@ -233,7 +233,12 @@ func (c *ARIClient) AnswerChannel(channelID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		var err = Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("channel not found")
@@ -300,7 +305,12 @@ func (c *ARIClient) GetChannelVariable(channelID, variable string) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("failed to make request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		var err = Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

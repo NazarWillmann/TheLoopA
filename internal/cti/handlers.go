@@ -11,16 +11,31 @@ import (
 )
 
 type HandlerContext struct {
-	StateManager    *domain.StateManager
-	WSClient        *ws.Client
-	AsteriskClient  AsteriskClient
-	Logger          zerolog.Logger
-	CurrentAgentID  string
+	StateManager   *domain.StateManager
+	WSClient       *ws.Client
+	AsteriskClient AsteriskClient
+	SIPServer      SIPServer
+	Logger         zerolog.Logger
+	CurrentAgentID string
 }
 
 // AsteriskClient interface for dependency injection
 type AsteriskClient interface {
 	Originate(endpoint, callerId string, variables map[string]string) (string, error)
+}
+
+// SIPServer interface for dependency injection
+type SIPServer interface {
+	EmulateIncomingCall(req SIPCallRequest) error
+	IsRunning() bool
+}
+
+// SIPCallRequest represents a call request for the SIP server
+type SIPCallRequest struct {
+	Destination string
+	CallerID    string
+	UUI         string
+	CallID      string
 }
 
 type Handlers struct {
@@ -37,6 +52,7 @@ func (h *Handlers) RegisterHandlers() {
 	h.ctx.WSClient.RegisterHandler("agentChangeState", ws.MessageHandlerFunc(h.handleAgentChangeState))
 	h.ctx.WSClient.RegisterHandler("agentLogout", ws.MessageHandlerFunc(h.handleAgentLogout))
 	h.ctx.WSClient.RegisterHandler("lineMakeCall", ws.MessageHandlerFunc(h.handleLineMakeCall))
+	h.ctx.WSClient.RegisterHandler("lineMakeOutboundCall", ws.MessageHandlerFunc(h.handleLineMakeOutboundCall))
 	h.ctx.WSClient.RegisterHandler("lineAnswerCall", ws.MessageHandlerFunc(h.handleLineAnswerCall))
 	h.ctx.WSClient.RegisterHandler("lineSetupTransfer", ws.MessageHandlerFunc(h.handleLineSetupTransfer))
 	h.ctx.WSClient.RegisterHandler("lineCompleteSPYcalls", ws.MessageHandlerFunc(h.handleLineCompleteSPYcalls))
@@ -189,46 +205,153 @@ func (h *Handlers) handleLineMakeCall(message ws.Message) error {
 		return h.sendErrorResponse(msg.RefID, "Failed to start call", 500)
 	}
 
-	// Process call in a separate goroutine
-	go h.processCallAsync(call, msg)
-
-	// Send immediate response that call was initiated
-	if msg.RefID != "" {
-		return h.sendSuccessResponse(msg.RefID, "Call initiated successfully")
-	}
+	// CRITICAL FIX: Process call synchronously to fix race condition
+	// The success response should only be sent AFTER the call is actually created
+	h.processCallSync(call, msg)
 
 	return nil
 }
 
-// processCallAsync handles the actual call processing in a separate goroutine
-func (h *Handlers) processCallAsync(call *domain.Call, msg LineMakeCallMessage) {
+// processCallSync handles the actual call processing synchronously with proper event sequence
+func (h *Handlers) processCallSync(call *domain.Call, msg LineMakeCallMessage) {
 	h.ctx.Logger.Info().
 		Str("call_id", call.ID).
 		Str("agent_id", call.AgentID).
 		Str("destination", msg.DestinationNumber).
-		Msg("Processing call asynchronously")
+		Msg("Processing call synchronously")
 
-	// Prepare variables for Asterisk
-	variables := map[string]string{
-		"UUI":     msg.UUI,
-		"agentId": call.AgentID,
-		"refId":   msg.RefID,
-		"callId":  call.ID,
-	}
-
-	// Make Asterisk originate call
-	endpoint := fmt.Sprintf("PJSIP/%s@bank-out", msg.DestinationNumber)
-	channelID, err := h.ctx.AsteriskClient.Originate(endpoint, "EmulatorService", variables)
-	if err != nil {
-		h.ctx.Logger.Error().Err(err).
+	// CRITICAL FIX: Use SIP server to emulate INCOMING call instead of ARI Originate
+	if h.ctx.SIPServer == nil || !h.ctx.SIPServer.IsRunning() {
+		h.ctx.Logger.Error().
 			Str("call_id", call.ID).
-			Msg("Failed to originate call in Asterisk")
+			Msg("SIP server is not available")
 
 		// Update call state to failed
 		h.ctx.StateManager.EndCall(call.ID, domain.CallStateFailed)
 
 		// Send call failed event
-		if err := h.SendCallFailedEvent(call, fmt.Sprintf("Failed to originate call: %v", err)); err != nil {
+		if err := h.SendCallFailedEvent(call, "SIP server not available"); err != nil {
+			h.ctx.Logger.Error().Err(err).Msg("Failed to send call failed event")
+		}
+		return
+	}
+
+	// Create SIP call request - this will appear as INCOMING call to Asterisk
+	sipRequest := SIPCallRequest{
+		Destination: msg.DestinationNumber,
+		CallerID:    "external-caller", // Emulate external caller
+		UUI:         msg.UUI,           // CRITICAL: UUI in SIP headers, not variables
+		CallID:      call.ID,
+	}
+
+	// Send SIP INVITE to Asterisk (emulating incoming call from trunk)
+	if err := h.ctx.SIPServer.EmulateIncomingCall(sipRequest); err != nil {
+		h.ctx.Logger.Error().Err(err).
+			Str("call_id", call.ID).
+			Msg("Failed to emulate incoming call via SIP")
+
+		// Update call state to failed
+		h.ctx.StateManager.EndCall(call.ID, domain.CallStateFailed)
+
+		// Send call failed event
+		if err := h.SendCallFailedEvent(call, fmt.Sprintf("Failed to emulate incoming call: %v", err)); err != nil {
+			h.ctx.Logger.Error().Err(err).Msg("Failed to send call failed event")
+		}
+		return
+	}
+
+	// Update call state to dialing (waiting for Asterisk to process the incoming call)
+	h.ctx.StateManager.CallManager.UpdateCallState(call.ID, domain.CallStateDialing)
+
+	// CRITICAL FIX: Send events in correct sequence
+	// 1. First send callStarted event
+	if err := h.SendCallStartedEvent(call); err != nil {
+		h.ctx.Logger.Error().Err(err).Msg("Failed to send call started event")
+		// Still continue with success response even if event fails
+	}
+
+	h.ctx.Logger.Info().
+		Str("agent_id", call.AgentID).
+		Str("call_id", call.ID).
+		Str("destination", msg.DestinationNumber).
+		Str("caller_id", sipRequest.CallerID).
+		Msg("Incoming call emulated successfully via SIP")
+
+	// 2. Finally send success response (AFTER call is actually created)
+	if msg.RefID != "" {
+		if err := h.sendSuccessResponse(msg.RefID, "Call initiated successfully"); err != nil {
+			h.ctx.Logger.Error().Err(err).Msg("Failed to send success response")
+		}
+	}
+}
+
+func (h *Handlers) handleLineMakeOutboundCall(message ws.Message) error {
+	h.ctx.Logger.Info().Msg("Handling lineMakeOutboundCall")
+
+	var msg LineMakeOutboundCallMessage
+	if err := h.parseMessage(message.Body, &msg); err != nil {
+		return err
+	}
+
+	agentID := h.getAgentID(msg.AgentID)
+	if agentID == "" {
+		return h.sendErrorResponse(msg.RefID, "No agent registered", 400)
+	}
+
+	// Check if agent is ready
+	if !h.ctx.StateManager.IsAgentReady(agentID) {
+		return h.sendErrorResponse(msg.RefID, "Agent is not ready", 400)
+	}
+
+	// Start call in state manager
+	call, err := h.ctx.StateManager.StartCall(agentID, msg.RefID, msg.DestinationNumber, msg.UUI)
+	if err != nil {
+		h.ctx.Logger.Error().Err(err).Msg("Failed to start outbound call")
+		return h.sendErrorResponse(msg.RefID, "Failed to start outbound call", 500)
+	}
+
+	// Process outbound call synchronously
+	h.processOutboundCallSync(call, msg)
+
+	return nil
+}
+
+// processOutboundCallSync handles outbound call processing using ARI Originate
+func (h *Handlers) processOutboundCallSync(call *domain.Call, msg LineMakeOutboundCallMessage) {
+	h.ctx.Logger.Info().
+		Str("call_id", call.ID).
+		Str("agent_id", call.AgentID).
+		Str("destination", msg.DestinationNumber).
+		Msg("Processing outbound call synchronously")
+
+	// Prepare variables for Asterisk
+	variables := map[string]string{
+		"UUI":       msg.UUI,
+		"agentId":   call.AgentID,
+		"refId":     msg.RefID,
+		"callId":    call.ID,
+		"direction": "OUTBOUND",
+	}
+
+	// Use caller ID from message or default
+	callerID := msg.CallerID
+	if callerID == "" {
+		callerID = "Agent-" + call.AgentID
+	}
+
+	// Make Asterisk originate outbound call to external destination
+	endpoint := fmt.Sprintf("PJSIP/%s@bank-out", msg.DestinationNumber)
+	channelID, err := h.ctx.AsteriskClient.Originate(endpoint, callerID, variables)
+	if err != nil {
+		h.ctx.Logger.Error().Err(err).
+			Str("call_id", call.ID).
+			Msg("Failed to originate outbound call in Asterisk")
+
+		// Update call state to failed
+		h.ctx.StateManager.EndCall(call.ID, domain.CallStateFailed)
+
+		// Send call failed event
+		if err := h.SendCallFailedEvent(call, fmt.Sprintf("Failed to originate outbound call: %v", err)); err != nil {
 			h.ctx.Logger.Error().Err(err).Msg("Failed to send call failed event")
 		}
 		return
@@ -238,16 +361,26 @@ func (h *Handlers) processCallAsync(call *domain.Call, msg LineMakeCallMessage) 
 	h.ctx.StateManager.CallManager.SetCallChannel(call.ID, channelID)
 	h.ctx.StateManager.CallManager.UpdateCallState(call.ID, domain.CallStateDialing)
 
+	// Send events in correct sequence
+	// 1. First send callStarted event
+	if err := h.SendCallStartedEvent(call); err != nil {
+		h.ctx.Logger.Error().Err(err).Msg("Failed to send call started event")
+		// Still continue with success response even if event fails
+	}
+
 	h.ctx.Logger.Info().
 		Str("agent_id", call.AgentID).
 		Str("call_id", call.ID).
 		Str("channel_id", channelID).
 		Str("destination", msg.DestinationNumber).
-		Msg("Call originated successfully in goroutine")
+		Str("caller_id", callerID).
+		Msg("Outbound call originated successfully via ARI")
 
-	// Send call started event
-	if err := h.SendCallStartedEvent(call); err != nil {
-		h.ctx.Logger.Error().Err(err).Msg("Failed to send call started event")
+	// 2. Finally send success response (AFTER call is actually created)
+	if msg.RefID != "" {
+		if err := h.sendSuccessResponse(msg.RefID, "Outbound call initiated successfully"); err != nil {
+			h.ctx.Logger.Error().Err(err).Msg("Failed to send success response")
+		}
 	}
 }
 

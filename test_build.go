@@ -48,7 +48,7 @@ func main() {
 	status := stateManager.GetSystemStatus()
 	fmt.Printf("   ✓ System status: %+v\n", status)
 
-	fmt.Println("\n✅ All basic tests passed!")
+	fmt.Println("\n All basic tests passed!")
 	fmt.Println("\nTo run the full service:")
 	fmt.Println("  go run cmd/emulator/main.go")
 	fmt.Println("\nTo run with test scenario:")

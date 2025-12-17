@@ -231,7 +231,10 @@ func (c *ARIEventClient) triggerReconnect() {
 	if c.connected {
 		c.connected = false
 		if c.conn != nil {
-			c.conn.Close()
+			err := c.conn.Close()
+			if err != nil {
+				return
+			}
 			c.conn = nil
 		}
 
@@ -242,7 +245,7 @@ func (c *ARIEventClient) triggerReconnect() {
 	}
 }
 
-// Default event handler implementation
+// DefaultEventHandler Default event handler implementation
 type DefaultEventHandler struct {
 	stateManager *domain.StateManager
 	ctiHandlers  CTIEventSender

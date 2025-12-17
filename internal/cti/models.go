@@ -31,10 +31,19 @@ type AgentLogoutMessage struct {
 	AgentID string `json:"agentId,omitempty"`
 }
 
-// Line make call message
+// Line make call message (incoming call from client to agent)
 type LineMakeCallMessage struct {
 	BaseMessage
 	DestinationNumber string `json:"destinationNumber"`
+	UUI               string `json:"uui,omitempty"`
+	AgentID           string `json:"agentId,omitempty"`
+}
+
+// Line make outbound call message (outbound call from agent to client)
+type LineMakeOutboundCallMessage struct {
+	BaseMessage
+	DestinationNumber string `json:"destinationNumber"`
+	CallerID          string `json:"callerId,omitempty"`
 	UUI               string `json:"uui,omitempty"`
 	AgentID           string `json:"agentId,omitempty"`
 }
@@ -49,10 +58,10 @@ type LineAnswerCallMessage struct {
 // Line setup transfer message
 type LineSetupTransferMessage struct {
 	BaseMessage
-	CallID            string `json:"callId,omitempty"`
-	AgentID           string `json:"agentId,omitempty"`
-	TransferTarget    string `json:"transferTarget,omitempty"`
-	TransferType      string `json:"transferType,omitempty"`
+	CallID         string `json:"callId,omitempty"`
+	AgentID        string `json:"agentId,omitempty"`
+	TransferTarget string `json:"transferTarget,omitempty"`
+	TransferType   string `json:"transferType,omitempty"`
 }
 
 // Line complete SPY calls message
@@ -108,9 +117,9 @@ type SuccessResponse struct {
 }
 
 type ErrorResponse struct {
-	RefID   string `json:"refId,omitempty"`
-	Error   string `json:"error"`
-	Code    int    `json:"code,omitempty"`
+	RefID string `json:"refId,omitempty"`
+	Error string `json:"error"`
+	Code  int    `json:"code,omitempty"`
 }
 
 // Agent state constants mapping
@@ -121,9 +130,9 @@ const (
 
 // Call state reasons
 const (
-	CallEndReasonNormal     = "NORMAL"
-	CallEndReasonBusy       = "BUSY"
-	CallEndReasonNoAnswer   = "NO_ANSWER"
-	CallEndReasonFailed     = "FAILED"
-	CallEndReasonCancelled  = "CANCELLED"
+	CallEndReasonNormal    = "NORMAL"
+	CallEndReasonBusy      = "BUSY"
+	CallEndReasonNoAnswer  = "NO_ANSWER"
+	CallEndReasonFailed    = "FAILED"
+	CallEndReasonCancelled = "CANCELLED"
 )
