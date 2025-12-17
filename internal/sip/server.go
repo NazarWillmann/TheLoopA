@@ -126,7 +126,7 @@ func (s *SIPServer) EmulateIncomingCall(req CallRequest) error {
 	sipMessage.WriteString(fmt.Sprintf("INVITE sip:%s@%s:%s SIP/2.0\r\n", req.Destination, asteriskHost, asteriskPort))
 
 	// Via header (critical - shows where response should go)
-	sipMessage.WriteString(fmt.Sprintf("Via: SIP/2.0/UDP 127.0.0.1:5061;branch=%s\r\n", branch))
+	sipMessage.WriteString(fmt.Sprintf("Via: SIP/2.0/UDP %s;branch=%s\r\n", s.listenAddr, branch))
 
 	// From header (external caller - critical for banking systems)
 	sipMessage.WriteString(fmt.Sprintf("From: \"%s\" <sip:%s@trunk-provider.com>;tag=%s\r\n", req.CallerID, req.CallerID, tag))
@@ -141,7 +141,7 @@ func (s *SIPServer) EmulateIncomingCall(req CallRequest) error {
 	sipMessage.WriteString("CSeq: 1 INVITE\r\n")
 
 	// Contact header
-	sipMessage.WriteString(fmt.Sprintf("Contact: <sip:%s@127.0.0.1:5061>\r\n", req.CallerID))
+	sipMessage.WriteString(fmt.Sprintf("Contact: <sip:%s@%s>\r\n", req.CallerID, s.listenAddr))
 
 	// Max-Forwards header
 	sipMessage.WriteString("Max-Forwards: 70\r\n")
